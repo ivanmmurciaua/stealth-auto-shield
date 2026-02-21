@@ -1,6 +1,6 @@
 # 🛡️ RAILGUN CLI
 
-CLI de privacidad sobre Ethereum. Soporta **Mainnet** y **Sepolia**.
+Privacy CLI over Ethereum. Supports **Mainnet** and **Sepolia**.
 
 ## Setup
 
@@ -9,43 +9,43 @@ npm install
 npm start
 ```
 
-## Flujo
+## Flow
 
 ```
-[ARRANQUE]
+[START]
     │
     ▼
-[FASE 1 · ONLINE]
-    ├── Inicializa RAILGUN engine
-    ├── Carga artefactos ZK (prover)
-    ├── Conecta Mainnet (eth.llamarpc.com / ankr)
-    └── Conecta Sepolia (ankr / drpc)
+[PHASE 1 · ONLINE]
+    ├── Initializes RAILGUN engine
+    ├── Loads ZK artifacts (prover)
+    ├── Connects to Mainnet (eth.llamarpc.com / ankr)
+    └── Connects to Sepolia (ankr / drpc)
     │
     ▼ RAILGUN OK
     │
-[FASE 2 · OFFLINE]  ← a partir de aquí, sin red
-    ├── Selección de red (Mainnet / Sepolia)
-    ├── Account index EOA
-    ├── Index RAILGUN wallet
-    └── Seed phrase (input oculto con *)
+[PHASE 2 · OFFLINE]  ← from here, without network
+    ├── Network selection (Mainnet / Sepolia)
+    ├── EOA account index
+    ├── RAILGUN wallet index
+    └── Seed phrase (hidden input with *)
     │
     ▼
-[DERIVACIÓN · LOCAL]
+[DERIVATION · LOCAL]
     ├── EOA   → m/44'/60'/{account}'/0/0  (Ethereum / Fluidkey)
     └── 0zk   → RAILGUN internal index
 ```
 
-## Paths de derivación
+## Derivation Paths
 
-| Propósito | Path |
-|-----------|------|
-| EOA estándar | `m/44'/60'/0'/0/0` |
-| EOA cuenta 1 | `m/44'/60'/1'/0/0` |
-| RAILGUN ID | interno SDK (index 0) |
+| Purpose          | Path                        |
+|------------------|-----------------------------|
+| Standard EOA     | `m/44'/60'/0'/0/0`          |
+| EOA Account 1    | `m/44'/60'/1'/0/0`          |
+| RAILGUN ID       | internal SDK (index 0)     |
 
-## Próximos pasos
+## Next Steps
 
 - [ ] Shield EOA → RAILGUN
-- [ ] Fluidkey stealth address desde EOA
-- [ ] Modo interactivo con menú principal
-- [ ] Exportar viewing key para escaneo externo
+- [ ] Fluidkey stealth address from EOA
+- [ ] Interactive mode with main menu
+- [ ] Export viewing key for external scanning
