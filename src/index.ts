@@ -1,127 +1,142 @@
-import { config } from "./config.js";
 import {
-  initFluidkeyKeys,
-  precheckStealthAccount,
-  generateStealthAccount,
-} from "./stealth.js";
-import {
-  initRailgun,
-  setupBalanceCallback,
-  scanRailgunBalances,
-  hasShieldedToRailgun,
-  shieldETH,
-} from "./railgun.js";
-import { formatEther } from "viem";
-import { pollUntilDeposit, sleep } from "./monitor.js";
+  printBanner,
+  printSection,
+  printSuccess,
+  printError,
+  printInfo,
+  hiddenPrompt,
+  prompt,
+  spinner,
+  printOfflineBanner,
+  askSeedLength,
+} from "./ui/console.js";
+import { initRailgunEngine } from "./init/railgun.js";
+import { validateSeed, deriveAll } from "./wallet/derive.js";
+import type { SupportedNetwork } from "./init/railgun.js";
+import chalk from "chalk";
+import { waitUntilOffline } from "./init/network.js";
 
-async function scanRGNBalances() {
-  const [spendable, pending] = await scanRailgunBalances();
-  if (spendable || pending) {
-    console.log(`→ Confirmed: ${formatEther(spendable)} ETH`);
-    console.log(`→ Pending to shield: ${formatEther(pending)} ETH\n`);
-  }
+export function hideAddress(address: string) {
+  return address.slice(0, 4) + "..." + address.slice(-4);
 }
 
 async function main() {
   console.clear();
-  // To avoid RAILGUN level legacy error scanning balances
-  const originalStderr = process.stderr.write.bind(process.stderr);
-  process.stderr.write = (chunk: any, ...args: any[]) => {
-    if (typeof chunk === "string" && chunk.includes("LEVEL_LEGACY"))
-      return true;
-    return originalStderr(chunk, ...args);
-  };
+  printBanner();
 
-  console.log("");
-  console.log(
-    "╔══════════════════════════════════════════════════════════════════════╗",
+  // ─── PHASE 1: ONLINE — INIT RAILGUN ───
+  printSection("Starting RAILGUN engine");
+  const walletSource = await prompt(
+    "Choose a name for your RAILGUN wallet source (less than 16 characters)",
   );
-  console.log(
-    "║                 Fluidkey DKSAP + RAILGUN auto-shield                 ║",
-  );
-  console.log(
-    "║                                                                      ║",
-  );
-  console.log(
-    "║       Creates stealth EOAs for deposits. Once ETH is detected,       ║",
-  );
-  console.log(
-    "║     it's automatically shielded, preserving input-output format.     ║",
-  );
-  console.log(
-    "║                                                                      ║",
-  );
-  console.log(
-    "║                     Created by ivanmmurcia.eth                       ║",
-  );
-  console.log(
-    "╚══════════════════════════════════════════════════════════════════════╝",
-  );
-  console.log("");
+  printInfo("Connecting to networks and loading ZK artifacts...");
 
-  console.log(`Configuration params:`);
-  console.log(`Network: ${config.networkStr}`);
-  console.log(`Poll interval: ${config.pollIntervalSeconds}s\n`);
+  const spin = spinner("Initializing...");
+  try {
+    await initRailgunEngine(walletSource);
+    spin.succeed(chalk.green("RAILGUN ready"));
+  } catch (err) {
+    spin.fail("Error initializing RAILGUN");
+    printError(String(err));
+    process.exit(1);
+  }
 
-  setupBalanceCallback();
-  await initRailgun();
-  await scanRGNBalances();
+  // ─── MANDATORY DISCONNECT INTERNET TO CONTINUE ───
+  printOfflineBanner();
+  await waitUntilOffline();
 
-  const fluidkeyKeys = await initFluidkeyKeys();
-  let nonce = parseInt(config.nonce);
+  // ─── PHASE 2: OFFLINE — SEED AND DERIVATION OPTIONS ───
+  printSection("Wallet setup (offline mode)");
+  printInfo("From here on, no network connection is made\n");
 
-  console.log("Looking for a usable stealth address...");
+  // Network selection
+  console.log(chalk.yellow("  Network:"));
+  console.log("    [1] mainnet");
+  console.log("    [2] sepolia");
+  const netChoice = await prompt("Choose (default: sepolia)");
+  const network: SupportedNetwork = netChoice === "1" ? "mainnet" : "sepolia";
+  printSuccess(`Network selected: ${network}`);
+
+  // Derivation index
+  const eoaIdxRaw = await prompt("Account index (default: 0)");
+  const eoaAccountIndex = eoaIdxRaw === "" ? 0 : parseInt(eoaIdxRaw, 10);
+
+  // Seed (input oculto con contador)
+  printSection("Enter your seed phrase");
+  printInfo("The text is not saved to disk\n");
+
+  const seedLength = await askSeedLength();
+
+  let mnemonic = "";
+  let attempts = 0;
   while (true) {
-    const account = await generateStealthAccount(fluidkeyKeys, nonce);
-    await sleep(3); // Avoid 429
+    mnemonic = await hiddenPrompt("Write your seed phrase", seedLength);
 
-    const [balance, shielded] = await Promise.all([
-      precheckStealthAccount(account),
-      hasShieldedToRailgun(account.stealthEOAAddress),
-    ]);
-
-    // === Uncomment this for better debug ===
-    // console.log(`Stealth EOA ${nonce}: ${account.stealthEOAAddress}`);
-    // console.log(`Signer key ${nonce}: ${account.stealthEOAPrivateKey}`);
-    // console.log(`ETH balance: ${formatEther(balance)} ETH\n`);
-
-    if (shielded) {
-      // console.log(`#${nonce} EOA already used → NEXT`);
-      nonce++;
-      continue;
-    }
-
-    if (balance === 0n) {
-      console.log("\nNew fresh stealth EOA found");
-      const depositedBalance = await pollUntilDeposit(
-        account.stealthEOAAddress,
-      );
-      console.log("");
-      await shieldETH(
-        account.stealthEOAPrivateKey,
-        depositedBalance,
-        account.stealthEOAAddress,
-      );
-      await scanRGNBalances();
+    if (validateSeed(mnemonic)) {
+      printSuccess("Valid seed");
       break;
     }
 
-    // balance > 0 && not shielded yet
-    console.log(`#${nonce} has ${formatEther(balance)} ETH → Shielding...`);
-    console.log("");
-    await shieldETH(
-      account.stealthEOAPrivateKey,
-      balance,
-      account.stealthEOAAddress,
-    );
-    await scanRGNBalances();
-    break;
+    attempts++;
+    printError("Invalid seed. Please check the words and try again");
+    if (attempts >= 3) {
+      printError("Too many failed attempts. Exiting");
+      process.exit(1);
+    }
   }
-  process.exit(0);
+
+  // ─── Derivación ───
+  printSection("Deriving keys (100% local)");
+
+  try {
+    const deriveSpin = spinner("Deriving....");
+    const result = await deriveAll(mnemonic, {
+      eoaAccountIndex,
+      eoaAddressIndex: 0,
+      network,
+    });
+    deriveSpin.succeed("Keys derived successfully");
+
+    // ─── Output ───
+    printSection("Result");
+
+    console.log(chalk.cyan("\n  ── Ethereum (0x) ──"));
+    console.log(
+      `  ${chalk.gray("0x address:")}       ${chalk.white(result.eoa.address)}`,
+    );
+    console.log(
+      `  ${chalk.gray("Derivation path:")}  ${chalk.white(result.eoa.derivationPath)}`,
+    );
+    console.log(
+      `  ${chalk.gray("Account index:")}    ${chalk.white(result.eoa.nonce)}`,
+    );
+    console.log(
+      `  ${chalk.gray("Private key:")}      ${chalk.red(hideAddress(result.eoa.privateKey))}`,
+    );
+
+    console.log(chalk.cyan("\n  ── RAILGUN (0zk) ──"));
+    console.log(
+      `  ${chalk.gray("0zk address:")}        ${chalk.white(hideAddress(result.railgun.zkAddress))}`,
+    );
+    console.log(
+      `  ${chalk.gray("RAILGUN Wallet ID:")}  ${chalk.red(hideAddress(result.railgun.railgunID))}`,
+    );
+
+    console.log(
+      chalk.yellow(
+        "\n  ⚠️  The seed and private keys are NEVER saved to disk\n",
+      ),
+    );
+
+    printSuccess("Setup complete. Ready for the next step");
+    process.exit(1);
+  } catch (err) {
+    printError(`Error: ${String(err)}`);
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {
-  console.error(`Fatal error: ${err.message}`);
-  console.error(err);
+  console.error(chalk.red("Fatal error:"), err);
   process.exit(1);
 });

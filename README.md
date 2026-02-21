@@ -1,66 +1,51 @@
-# Fluidkey DKSAP + RAILGUN auto-shield
+# 🛡️ RAILGUN CLI
 
-**Containerized, self-custodial. Everything runs locally. Keys never leave your machine**
-
-## Flow
-
-```
-Seed (.env)
-  │
-  ├─→ EOA (m/44'/60'/0'/0/0)
-  │     └─→ sign Fluidkey message + PIN
-  │           └─→ spending key + viewing key
-  │                 └─→ N stealth EOAs  ← share these to receive payments
-  │
-  └─→ RAILGUN wallet (same seed, different path)
-            └─→ 0zk address  ← final private destination
-
-When ETH arrives at any stealth address:
-  stealth EOA → sign shield tx → RAILGUN contract → 0zk balance
-```
+CLI de privacidad sobre Ethereum. Soporta **Mainnet** y **Sepolia**.
 
 ## Setup
 
 ```bash
-# Copy and edit config
-cp .env.example .env
-# Edit .env: SEED, FLUIDKEY_PIN, RPC_URL, ETHERSCAN_API_KEY, RAILGUN_DB_PASSWORD
-
-# Start
-docker compose up --build -d && clear && docker compose logs -f
+npm install
+npm start
 ```
 
-## Recovery using SARA
-SARA is a tool developed by Fluidkey team to recover your funds without relying in official apps.
-
-All public funds are independently recoverable:
-1. Go to [SARA](https://recovery.fluidkey.com/) website
-2. Connect the same wallet (or use the seed)
-3. Enter the same PIN
-4. Select `Disabled` in auto-earn profile menu and import _Signer Key_ into your wallet
-7. Recover your ETH
-
-## .env reference
-
-| Variable | Description |
-|---|---|
-| `SEED` | 12 words — source of truth for everything |
-| `FLUIDKEY_PIN` | PIN the same as in the Fluidkey app |
-| `RPC_URL` | Alchemy/Infura endpoint. You can obtain one for free. |
-| `ETHERSCAN_API_KEY` | Etherscan API Key. You can obtain one for free. |
-| `RAILGUN_DB_PASSWORD` | Local password to encrypt the LevelDB |
-| `NETWORK` | `ethereum` \| `sepolia` \| `polygon` (default: sepolia)|
-| `POLL_INTERVAL_SECONDS` | Check frequency (default: 15) |
-| `STARTING_NONCE` | You can skip used stealth EOAs (default: 0) |
-| `RAILGUN_WALLET_ID` | Auto-generated on the first startup |
-
-## File Architecture
+## Flujo
 
 ```
-src/
-  config.ts   — loads and validates the .env
-  index.ts    — entrypoint, orchestrates the boot
-  monitor.ts  — polling loop
-  railgun.ts  — RAILGUN engine init + shield function
-  stealth.ts  — Fluidkey's stealth addresses derivation
+[ARRANQUE]
+    │
+    ▼
+[FASE 1 · ONLINE]
+    ├── Inicializa RAILGUN engine
+    ├── Carga artefactos ZK (prover)
+    ├── Conecta Mainnet (eth.llamarpc.com / ankr)
+    └── Conecta Sepolia (ankr / drpc)
+    │
+    ▼ RAILGUN OK
+    │
+[FASE 2 · OFFLINE]  ← a partir de aquí, sin red
+    ├── Selección de red (Mainnet / Sepolia)
+    ├── Account index EOA
+    ├── Index RAILGUN wallet
+    └── Seed phrase (input oculto con *)
+    │
+    ▼
+[DERIVACIÓN · LOCAL]
+    ├── EOA   → m/44'/60'/{account}'/0/0  (Ethereum / Fluidkey)
+    └── 0zk   → RAILGUN internal index
 ```
+
+## Paths de derivación
+
+| Propósito | Path |
+|-----------|------|
+| EOA estándar | `m/44'/60'/0'/0/0` |
+| EOA cuenta 1 | `m/44'/60'/1'/0/0` |
+| RAILGUN ID | interno SDK (index 0) |
+
+## Próximos pasos
+
+- [ ] Shield EOA → RAILGUN
+- [ ] Fluidkey stealth address desde EOA
+- [ ] Modo interactivo con menú principal
+- [ ] Exportar viewing key para escaneo externo
