@@ -1,17 +1,17 @@
 {
-  "name": "stealth-railgun-poc",
+  "name": "stealth-auto-shield",
   "description": "Fluidkey Stealth Addresses + RAILGUN auto-shield, containerized, self-custodial",
   "version": "0.1.0",
   "type": "module",
   "license": "GPL-3.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ivanmmurciaua/stealth-railgun-poc.git"
+    "url": "git+https://github.com/ivanmmurciaua/stealth-auto-shield.git"
   },
   "bugs": {
-    "url": "https://github.com/ivanmmurciaua/stealth-railgun-poc/issues"
+    "url": "https://github.com/ivanmmurciaua/stealth-auto-shield/issues"
   },
-  "homepage": "https://github.com/ivanmmurciaua/stealth-railgun-poc#readme",
+  "homepage": "https://github.com/ivanmmurciaua/stealth-auto-shield#readme",
   "dependencies": {
     "@fluidkey/stealth-account-kit": "^1.1.1",
     "@railgun-community/shared-models": "8.0.1",
