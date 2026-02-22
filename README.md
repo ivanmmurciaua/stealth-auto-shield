@@ -22,6 +22,9 @@ When ETH arrives at any stealth address:
 ## Setup
 
 ```bash
+# Clone this repo
+git clone git@github.com:ivanmmurciaua/stealth-auto-shield.git
+
 # Copy and edit config
 cp .env.example .env
 # Edit .env: SEED, FLUIDKEY_PIN, RPC_URL, ETHERSCAN_API_KEY, RAILGUN_DB_PASSWORD
@@ -34,10 +37,10 @@ docker compose up --build -d && clear && docker compose logs -f
 SARA is a tool developed by Fluidkey team to recover your funds without relying in official apps.
 
 All public funds are independently recoverable:
-1. Go to [SARA](https://recovery.fluidkey.com/) website
+1. Go to [SARA](https://recovery.fluidkey.com/) website **OR** clone [this repository](git@github.com:ivanmmurciaua/sara.git) and execute `yarn && yarn dev`
 2. Connect the same wallet (or use the seed)
 3. Enter the same PIN
-4. Select `Disabled` in auto-earn profile menu and import _Signer Key_ into your wallet
+4. Select `Disabled` in auto-earn profile menu and import _Signer Key_ of each stealth address into your wallet
 7. Recover your ETH
 
 ## .env reference
