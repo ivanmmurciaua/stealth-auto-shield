@@ -9,31 +9,150 @@ import {
   spinner,
   printOfflineBanner,
   askSeedLength,
+  printOnlineBanner,
 } from "./ui/console.js";
-import { initRailgunEngine } from "./init/railgun.js";
-import { validateSeed, deriveAll } from "./wallet/derive.js";
-import type { SupportedNetwork } from "./init/railgun.js";
+import {
+  initRailgunEngine,
+  scanRailgunBalances,
+  setupBalanceCallback,
+  shieldETH,
+} from "./init/railgun.js";
+import { validateSeed, deriveRailgunID, deriveEOA } from "./wallet/derive.js";
 import chalk from "chalk";
-import { waitUntilOffline } from "./init/network.js";
+import { waitUntil } from "./init/network.js";
+import { formatEther } from "viem";
+import { pollUntilDeposit } from "./utils/monitor.js";
+import {
+  avoidRailgunScanningErrors,
+  clear,
+  hideAddress,
+  provider,
+  setNetwork,
+  setProvider,
+} from "./utils/config.js";
+import { SupportedNetwork } from "./utils/types.js";
+// import { initFluidkeyKeys } from "./stealth.js";
 
-export function hideAddress(address: string) {
-  return address.slice(0, 4) + "..." + address.slice(-4);
+async function networkSelection(): Promise<SupportedNetwork> {
+  console.log(chalk.yellow("  Network:"));
+  console.log("    [1] mainnet");
+  console.log("    [2] sepolia");
+  const netChoice = await prompt("Choose (default: sepolia)");
+  const network: SupportedNetwork = netChoice === "1" ? "mainnet" : "sepolia";
+
+  // Set global config
+  setNetwork(network);
+  setProvider(network);
+
+  printSuccess(`Network selected: ${network}`);
+  return network;
+}
+
+async function menu(seed: string, zkAddress: `0zk${string}`) {
+  while (true) {
+    console.log(chalk.cyan("\n  ── Menu ──"));
+    console.log("    [0] Exit");
+    console.log("    [1] Ephemeral deposit");
+    console.log("    [2] Transfer");
+    console.log("    [3] Unshield");
+
+    const choice = await prompt("Choose an option");
+
+    switch (choice) {
+      case "1":
+        await handleEphemeralDeposit(seed, zkAddress);
+        break;
+      case "2":
+        // params: network? ; SrcZkaddress ; DstZkaddress
+        await handleTransfer();
+        break;
+      case "3":
+        // params: network? ; SrcZkaddress? ; Dst0xaddress
+        await handleUnshield();
+        break;
+      case "0":
+        console.log(chalk.yellow("\n  Goodbye\n"));
+        process.exit(0);
+      default:
+        printError("Invalid option. Try again.");
+    }
+  }
+}
+
+async function stealthOption(): Promise<boolean> {
+  console.log("");
+  console.log(chalk.yellow("  Do you want to use stealth addresses?"));
+  console.log("    [1] Yes");
+  console.log("    [2] Nop");
+  let stealthChoice = await prompt("Choose (default: Nop)");
+  return stealthChoice === "1" ? true : false;
+}
+
+async function handleEphemeralDeposit(
+  seed: string,
+  railgunAddress: `0zk${string}`,
+): Promise<void> {
+  printSection("Ephemeral Deposit");
+
+  let eoa;
+  const stealthChoice = await stealthOption();
+
+  let addressIndex = 0;
+  if (stealthChoice) {
+    // let stealthIndex = 0;
+    console.log("Stealth crazy sh*t will appear here soon...");
+    process.exit(0);
+  } else {
+    while (true) {
+      eoa = deriveEOA(seed, 0, addressIndex);
+
+      if (eoa) {
+        const nonce = await provider.getTransactionCount(eoa.address);
+
+        if (nonce === 0) {
+          printSuccess(`EOA found: ${eoa.address} (index ${addressIndex})`);
+          break;
+        }
+        addressIndex++;
+        // DEBUG
+        // printInfo(`EOA ${eoa.address} already used (nonce ${nonce}), trying next...`,);
+      }
+    }
+  }
+
+  let balance = await provider.getBalance(eoa.address);
+  if (balance === 0n) {
+    printInfo(`No funds yet. Waiting for deposit...`);
+    balance = await pollUntilDeposit(eoa.address);
+  }
+
+  printSuccess(`\nBalance detected: ${formatEther(balance)} ETH`);
+  await shieldETH(eoa, railgunAddress, balance);
+}
+
+async function handleTransfer(): Promise<void> {
+  printSection("Transfer");
+  printInfo("Coming soon...");
+}
+
+async function handleUnshield(): Promise<void> {
+  printSection("Unshield");
+  printInfo("Coming soon...");
 }
 
 async function main() {
-  console.clear();
+  clear();
+  avoidRailgunScanningErrors();
   printBanner();
+  await networkSelection();
 
   // ─── PHASE 1: ONLINE — INIT RAILGUN ───
   printSection("Starting RAILGUN engine");
-  const walletSource = await prompt(
-    "Choose a name for your RAILGUN wallet source (less than 16 characters)",
-  );
   printInfo("Connecting to networks and loading ZK artifacts...");
 
   const spin = spinner("Initializing...");
   try {
-    await initRailgunEngine(walletSource);
+    await initRailgunEngine();
     spin.succeed(chalk.green("RAILGUN ready"));
   } catch (err) {
     spin.fail("Error initializing RAILGUN");
@@ -43,36 +162,24 @@ async function main() {
 
   // ─── MANDATORY DISCONNECT INTERNET TO CONTINUE ───
   printOfflineBanner();
-  await waitUntilOffline();
+  await waitUntil({ type: "offline" });
 
   // ─── PHASE 2: OFFLINE — SEED AND DERIVATION OPTIONS ───
   printSection("Wallet setup (offline mode)");
   printInfo("From here on, no network connection is made\n");
 
-  // Network selection
-  console.log(chalk.yellow("  Network:"));
-  console.log("    [1] mainnet");
-  console.log("    [2] sepolia");
-  const netChoice = await prompt("Choose (default: sepolia)");
-  const network: SupportedNetwork = netChoice === "1" ? "mainnet" : "sepolia";
-  printSuccess(`Network selected: ${network}`);
-
-  // Derivation index
-  const eoaIdxRaw = await prompt("Account index (default: 0)");
-  const eoaAccountIndex = eoaIdxRaw === "" ? 0 : parseInt(eoaIdxRaw, 10);
-
-  // Seed (input oculto con contador)
+  // Hidden input
   printSection("Enter your seed phrase");
   printInfo("The text is not saved to disk\n");
 
   const seedLength = await askSeedLength();
 
-  let mnemonic = "";
+  let seed = "";
   let attempts = 0;
   while (true) {
-    mnemonic = await hiddenPrompt("Write your seed phrase", seedLength);
+    seed = await hiddenPrompt("Write your seed phrase", seedLength);
 
-    if (validateSeed(mnemonic)) {
+    if (validateSeed(seed)) {
       printSuccess("Valid seed");
       break;
     }
@@ -85,41 +192,19 @@ async function main() {
     }
   }
 
-  // ─── Derivación ───
   printSection("Deriving keys (100% local)");
 
   try {
     const deriveSpin = spinner("Deriving....");
-    const result = await deriveAll(mnemonic, {
-      eoaAccountIndex,
-      eoaAddressIndex: 0,
-      network,
-    });
+    const compiled = await deriveRailgunID(seed);
     deriveSpin.succeed("Keys derived successfully");
-
-    // ─── Output ───
-    printSection("Result");
-
-    console.log(chalk.cyan("\n  ── Ethereum (0x) ──"));
-    console.log(
-      `  ${chalk.gray("0x address:")}       ${chalk.white(result.eoa.address)}`,
-    );
-    console.log(
-      `  ${chalk.gray("Derivation path:")}  ${chalk.white(result.eoa.derivationPath)}`,
-    );
-    console.log(
-      `  ${chalk.gray("Account index:")}    ${chalk.white(result.eoa.nonce)}`,
-    );
-    console.log(
-      `  ${chalk.gray("Private key:")}      ${chalk.red(hideAddress(result.eoa.privateKey))}`,
-    );
 
     console.log(chalk.cyan("\n  ── RAILGUN (0zk) ──"));
     console.log(
-      `  ${chalk.gray("0zk address:")}        ${chalk.white(hideAddress(result.railgun.zkAddress))}`,
+      `  ${chalk.gray("0zk address:")}        ${chalk.white(hideAddress(compiled.zkAddress))}`,
     );
     console.log(
-      `  ${chalk.gray("RAILGUN Wallet ID:")}  ${chalk.red(hideAddress(result.railgun.railgunID))}`,
+      `  ${chalk.gray("RAILGUN Wallet ID:")}  ${chalk.red(hideAddress(compiled.railgunID))}`,
     );
 
     console.log(
@@ -128,8 +213,26 @@ async function main() {
       ),
     );
 
-    printSuccess("Setup complete. Ready for the next step");
-    process.exit(1);
+    printOnlineBanner();
+    await waitUntil({ type: "online" });
+    console.clear();
+
+    // Setup balance callback
+    setupBalanceCallback();
+
+    // Scan
+    const spin = spinner("Checking RAILGUN balances...");
+    const [spendable, pending] = await scanRailgunBalances(compiled.railgunID);
+    spin.stop();
+
+    console.log(chalk.cyan("\n  ── RAILGUN Balances ──"));
+    console.log(
+      `  ${chalk.gray("Spendable:")}  ${chalk.green(formatEther(spendable))} ETH`,
+    );
+    console.log(
+      `  ${chalk.gray("Pending:")}    ${chalk.yellow(formatEther(pending))} ETH`,
+    );
+    await menu(seed, compiled.zkAddress);
   } catch (err) {
     printError(`Error: ${String(err)}`);
     process.exit(1);

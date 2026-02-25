@@ -1,6 +1,10 @@
 import { spinner } from "../ui/console.js";
 import chalk from "chalk";
 
+interface ModeType {
+  type: "offline" | "online";
+}
+
 const CHECK_URLS = [
   "https://cloudflare.com",
   "https://google.com",
@@ -26,23 +30,34 @@ export async function hasInternet(): Promise<boolean> {
   return results.some((r) => r.status === "fulfilled" && r.value === true);
 }
 
-export async function waitUntilOffline(): Promise<void> {
-  const spin = spinner("Waiting to cut the connection...");
-
+export async function waitUntil(mode: ModeType): Promise<void> {
+  const spin = spinner("Checking connection...");
   while (true) {
     const online = await hasInternet();
+    if (mode.type === "online") {
+      if (online) {
+        spin.succeed(
+          chalk.green("Connection detected - Online mode activated"),
+        );
+        return;
+      }
 
-    if (!online) {
-      spin.succeed(
-        chalk.green("No connection detected - Offline mode activated"),
+      spin.text = chalk.yellow(
+        "There's still no connection.... connect the WiFi/cable and wait",
       );
-      return;
-    }
+    } else {
+      if (!online) {
+        spin.succeed(
+          chalk.green("No connection detected - Offline mode activated"),
+        );
+        return;
+      }
 
-    spin.text = chalk.yellow(
-      "There's still a connection... disconnect the WiFi/cable and wait",
-    );
-    await sleep(2);
+      spin.text = chalk.yellow(
+        "There's still a connection... disconnect the WiFi/cable and wait",
+      );
+    }
+    await sleep(3);
   }
 }
 

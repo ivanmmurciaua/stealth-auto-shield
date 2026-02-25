@@ -3,18 +3,30 @@ import {
   startRailgunEngine,
   stopRailgunEngine,
   // getProver,
-  setLoggers,
+  setOnBalanceUpdateCallback,
+  refreshBalances,
+  // setLoggers,
   ArtifactStore,
+  gasEstimateForShieldBaseToken,
+  populateShieldBaseToken,
 } from "@railgun-community/wallet";
 import {
+  RailgunBalancesEvent,
   FallbackProviderJsonConfig,
+  NETWORK_CONFIG,
   NetworkName,
+  RailgunERC20AmountRecipient,
+  TXIDVersion,
+  EVMGasType,
 } from "@railgun-community/shared-models";
-import { printSuccess, printInfo, printError } from "../ui/console.js";
+import { printInfo, printSuccess } from "../ui/console.js";
 import { Level } from "level";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { DerivedEOA } from "../wallet/derive.js";
+import { Wallet } from "ethers";
+import { network, provider } from "../utils/config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,8 +65,6 @@ function createArtifactStore(dir: string): ArtifactStore {
   );
 }
 
-export type SupportedNetwork = "mainnet" | "sepolia";
-
 export interface NetworkProviders {
   // mainnet: FallbackProviderJsonConfig;
   sepolia: FallbackProviderJsonConfig;
@@ -68,8 +78,8 @@ export function buildProviders(): NetworkProviders {
   // const mainnet: FallbackProviderJsonConfig = {
   //   chainId: 1,
   //   providers: [
-  //     { provider: "https://eth.llamarpc.com", priority: 1, weight: 2 },
-  //     { provider: "https://rpc.ankr.com/eth", priority: 2, weight: 2 },
+  //     { provider: process.env.MAINNET_RPC_URL_1!, priority: 1, weight: 2 },
+  //     { provider: process.env.MAINNET_RPC_URL_2!, priority: 2, weight: 2 },
   //   ],
   // };
 
@@ -89,8 +99,7 @@ export function buildProviders(): NetworkProviders {
     ],
   };
 
-  // return { mainnet, sepolia };
-  return { sepolia };
+  return { sepolia }; //mainnet,  };
 }
 
 /**
@@ -99,11 +108,12 @@ export function buildProviders(): NetworkProviders {
  *
  * Requires internet. Called when starting the CLI, without seed.
  */
-export async function initRailgunEngine(walletSource: string): Promise<void> {
-  setLoggers(
-    (msg: string) => printInfo(`[RAILGUN] ${msg}`),
-    (err: string) => printError(`[RAILGUN ERR] ${err}`),
-  );
+export async function initRailgunEngine(): Promise<void> {
+  // For debugging
+  // setLoggers(
+  //   (msg: string) => printInfo(`[RAILGUN] ${msg}`),
+  //   (err: string) => printError(`[RAILGUN ERR] ${err}`),
+  // );
 
   const providers = buildProviders();
 
@@ -117,7 +127,7 @@ export async function initRailgunEngine(walletSource: string): Promise<void> {
   printInfo(`Artifacts: ${ARTIFACTS_DIR}`);
 
   await startRailgunEngine(
-    walletSource,
+    "stautoshieldcli",
     db,
     false, // shouldDebug — engine verbose logs
     artifactStore,
@@ -146,7 +156,14 @@ async function addNetworks(providers: NetworkProviders): Promise<void> {
   const { loadProvider } = await import("@railgun-community/wallet");
 
   // Mainnet
-  // loadProvider (mainnet)
+  // await loadProvider(
+  //   {
+  //     chainId: providers.mainnet.chainId,
+  //     providers: providers.mainnet.providers,
+  //   },
+  //   NetworkName.Ethereum,
+  // );
+  // console.log(`Network connected: Mainnet (chainId 1)`);
 
   // Sepolia
   await loadProvider(
@@ -156,5 +173,121 @@ async function addNetworks(providers: NetworkProviders): Promise<void> {
     },
     NetworkName.EthereumSepolia,
   );
-  // printSuccess(`Red cargada: Sepolia (chainId 11155111)`);
+  // console.log(`Network connected: Sepolia (chainId 11155111)`);
 }
+
+// ─── Balance state ----
+const BALANCES_POLL_INTERVAL = 7000;
+let balanceSpendable = 0n;
+let balancePending = 0n;
+
+export function setupBalanceCallback(): void {
+  setOnBalanceUpdateCallback((balancesEvent: RailgunBalancesEvent) => {
+    const total = balancesEvent.erc20Amounts.reduce(
+      (acc, e) => acc + e.amount,
+      0n,
+    );
+    if (total === 0n) return;
+    if (balancesEvent.balanceBucket === "Spendable") {
+      balanceSpendable = total;
+    } else if (balancesEvent.balanceBucket === "ShieldPending") {
+      balancePending = total;
+    }
+  });
+}
+
+export async function scanRailgunBalances(
+  railgunWalletId: string,
+): Promise<[bigint, bigint]> {
+  const networkName =
+    network === "mainnet" ? NetworkName.Ethereum : NetworkName.EthereumSepolia;
+  const chain = NETWORK_CONFIG[networkName].chain;
+
+  await refreshBalances(chain, [railgunWalletId]);
+  await new Promise((r) => setTimeout(r, BALANCES_POLL_INTERVAL));
+
+  return [balanceSpendable, balancePending];
+}
+
+//TODO: RGN Transfer
+
+// Shield & Unshield
+export async function shieldETH(
+  eoa: DerivedEOA,
+  railgunAddress: `0zk${string}`,
+  amount: bigint,
+): Promise<string> {
+  console.log(`\nStarting shield from ${eoa.address}`);
+
+  const configNetwork =
+    network === "mainnet" ? NetworkName.Ethereum : NetworkName.EthereumSepolia;
+
+  const signer = new Wallet(eoa.privateKey, provider);
+  const shieldPrivateKey = signer.signingKey.privateKey as `0x${string}`;
+
+  const erc20AmountRecipient: RailgunERC20AmountRecipient = {
+    tokenAddress: NETWORK_CONFIG[configNetwork].baseToken.wrappedAddress,
+    amount: amount,
+    recipientAddress: railgunAddress,
+  };
+
+  // console.log("Estimating gas...");
+  const gasEstimateResponse = await gasEstimateForShieldBaseToken(
+    TXIDVersion.V2_PoseidonMerkle,
+    configNetwork,
+    railgunAddress,
+    shieldPrivateKey,
+    erc20AmountRecipient,
+    signer.address,
+  );
+  const gasEstimate = gasEstimateResponse.gasEstimate;
+  // console.log(`Estimated gas: ${gasEstimate}`);
+
+  // Subtract gas from the amount
+  const feeData = await provider.getFeeData();
+  const maxFeePerGas = feeData.maxFeePerGas ?? 20000000000n;
+  const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas ?? 1000000000n;
+
+  const MIN_SHIELD_AMOUNT = 10000000000000000n;
+
+  const gasCost = gasEstimate * maxFeePerGas;
+  const buffer = gasCost / 5n; // 20%
+  const netAmount = amount - gasCost - buffer;
+
+  if (amount < MIN_SHIELD_AMOUNT) {
+    throw new Error(`Insufficient balance to shield. Minimum: 0.01 ETH`);
+  }
+
+  if (netAmount <= 0n)
+    throw new Error(
+      `Insufficient balance to cover gas. Balance: ${amount}, Gas: ${gasCost}`,
+    );
+
+  // console.log(`Net amount (after gas): ${netAmount} wei`);
+
+  const populateResponse = await populateShieldBaseToken(
+    TXIDVersion.V2_PoseidonMerkle,
+    configNetwork,
+    railgunAddress,
+    shieldPrivateKey,
+    { ...erc20AmountRecipient, amount: netAmount },
+    {
+      evmGasType: EVMGasType.Type2 as const,
+      gasEstimate,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+    },
+  );
+
+  const transaction = populateResponse.transaction;
+
+  console.log("");
+  printInfo("Sending tx...");
+  const tx = await signer.sendTransaction(transaction);
+  printInfo(`Transaction sent: ${tx.hash}`);
+  await tx.wait();
+  printSuccess(`Tx completed: ${netAmount} wei deposited`);
+  return tx.hash;
+}
+
+//TODO: Unshield

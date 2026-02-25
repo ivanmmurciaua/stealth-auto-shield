@@ -8,7 +8,7 @@ import {
 } from "@fluidkey/stealth-account-kit";
 import { privateKeyToAccount } from "viem/accounts";
 import { JsonRpcProvider, HDNodeWallet, Mnemonic, Wallet } from "ethers";
-import { config } from "./config.js";
+import { deriveEOA } from "./wallet/derive.js";
 
 export interface StealthAccount {
   stealthEOAPrivateKey: `0x${string}`; // Stealth EOA private key to recover funds importing it in your wallet directly
@@ -23,31 +23,27 @@ export interface FluidkeyKeys {
   eoa: string;
 }
 
-export async function precheckStealthAccount(
-  account: StealthAccount,
-): Promise<bigint> {
-  const provider = new JsonRpcProvider(config.rpcUrl);
-  const eoaBalance = await provider.getBalance(account.stealthEOAAddress);
-  return eoaBalance;
-}
+// export async function precheckStealthAccount(
+//   account: StealthAccount,
+// ): Promise<bigint> {
+//   const provider = new JsonRpcProvider(config.rpcUrl);
+//   const eoaBalance = await provider.getBalance(account.stealthEOAAddress);
+//   return eoaBalance;
+// }
 
-export function deriveEOA(): Wallet {
-  const seed = Mnemonic.fromPhrase(config.seed);
-  const hdNode = HDNodeWallet.fromMnemonic(seed, "m/44'/60'/0'/0/0");
-  return new Wallet(hdNode.privateKey);
-}
+export async function initFluidkeyKeys(
+  eoa: any,
+  fluidkeyPin: string,
+): Promise<FluidkeyKeys> {
+  const wallet = new Wallet(eoa.privateKey);
 
-export async function initFluidkeyKeys(): Promise<FluidkeyKeys> {
-  // console.log("=== DKSAP FLUIDKEY ===");
-
-  const eoa = deriveEOA();
-  // console.log(`Derived EOA from seed: ${eoa.address}`);
+  console.log(`Derived EOA from seed: ${eoa.address}`);
 
   const { message } = generateFluidkeyMessage({
     address: eoa.address,
-    pin: config.fluidkeyPin,
+    pin: fluidkeyPin,
   });
-  const signature = (await eoa.signMessage(message)) as `0x${string}`;
+  const signature = (await wallet.signMessage(message)) as `0x${string}`;
   const { spendingPrivateKey, viewingPrivateKey } =
     generateKeysFromSignature(signature);
 

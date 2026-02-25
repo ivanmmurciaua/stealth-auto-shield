@@ -1,25 +1,20 @@
 import { validateMnemonic } from "bip39";
 import { HDNodeWallet } from "ethers";
 import { NetworkName } from "@railgun-community/shared-models";
-import type { SupportedNetwork } from "../init/railgun.js";
 
 import { NETWORK_CONFIG } from "@railgun-community/shared-models";
+import { network } from "../utils/config";
 
 export interface DerivedEOA {
-  address: string;
-  privateKey: string;
+  address: `0x${string}`;
+  privateKey: `0x${string}`;
   derivationPath: string;
   nonce: number;
 }
 
 export interface DerivedRailgunID {
-  zkAddress: string;
+  zkAddress: `0zk${string}`;
   railgunID: string;
-}
-
-export interface WalletDerivation {
-  eoa: DerivedEOA;
-  railgun: DerivedRailgunID;
 }
 
 /**
@@ -35,36 +30,28 @@ export function eoaDerivationPath(
   return `m/44'/60'/${accountIndex}'/0/${addressIndex}`;
 }
 
-/**
- * RAILGUN uses its own internal path.
- * The SDK manages it; we only need the mnemonic + index.
- */
-export function railgunDerivationPath(index = 0): string {
-  return `RAILGUN internal — index ${index}`;
-}
-
-export function validateSeed(mnemonic: string): boolean {
-  return validateMnemonic(mnemonic.trim());
+export function validateSeed(seed: string): boolean {
+  return validateMnemonic(seed.trim());
 }
 
 /**
- * Derives an Ethereum EOA from the mnemonic.
+ * Derives an Ethereum EOA from the seed.
  *
- * @param mnemonic  - seed phrase (12 or 24 words)
+ * @param seed  - seed phrase (12 or 24 words)
  * @param accountIndex - account index (the derivation "nonce")
  * @param addressIndex - address index within the account
  */
 export function deriveEOA(
-  mnemonic: string,
+  seed: string,
   accountIndex = 0,
   addressIndex = 0,
 ): DerivedEOA {
   const path = eoaDerivationPath(accountIndex, addressIndex);
-  const wallet = HDNodeWallet.fromPhrase(mnemonic.trim(), undefined, path);
+  const wallet = HDNodeWallet.fromPhrase(seed.trim(), undefined, path);
 
   return {
-    address: wallet.address,
-    privateKey: wallet.privateKey,
+    address: wallet.address as `0x${string}`,
+    privateKey: wallet.privateKey as `0x${string}`,
     derivationPath: path,
     nonce: accountIndex,
   };
@@ -77,16 +64,12 @@ async function getEncryptionKey(secret: string): Promise<string> {
 }
 
 /**
- * Derives the RAILGUN ID (0zk address) from the mnemonic.
+ * Derives the RAILGUN ID (0zk address) from the seed.
  * Requires the engine to be initialized (initRailgunEngine).
  *
- * @param mnemonic   - seed phrase
- * @param network    - network for the 0zk address
+ * @param seed   - seed phrase
  */
-export async function deriveRailgunID(
-  mnemonic: string,
-  network: SupportedNetwork = "mainnet",
-): Promise<DerivedRailgunID> {
+export async function deriveRailgunID(seed: string): Promise<DerivedRailgunID> {
   const { createRailgunWallet } = await import("@railgun-community/wallet");
 
   const networkName =
@@ -100,32 +83,37 @@ export async function deriveRailgunID(
 
   const railgunWallet = await createRailgunWallet(
     encryptionKey,
-    mnemonic,
+    seed,
     creationBlockMap,
   );
 
   return {
-    zkAddress: railgunWallet.railgunAddress,
+    zkAddress: railgunWallet.railgunAddress as `0zk${string}`,
     railgunID: railgunWallet.id,
   };
 }
 
-export async function deriveAll(
-  mnemonic: string,
-  opts: {
-    eoaAccountIndex?: number;
-    eoaAddressIndex?: number;
-    network?: SupportedNetwork;
-  } = {},
-): Promise<WalletDerivation> {
-  const {
-    eoaAccountIndex = 0,
-    eoaAddressIndex = 0,
-    network = "mainnet",
-  } = opts;
+// export interface WalletDerivation {
+//   eoa: DerivedEOA;
+//   railgun: DerivedRailgunID;
+// }
+//
+// export async function deriveAll(
+//   seed: string,
+//   opts: {
+//     eoaAccountIndex?: number;
+//     eoaAddressIndex?: number;
+//     network?: SupportedNetwork;
+//   } = {},
+// ): Promise<WalletDerivation> {
+//   const {
+//     eoaAccountIndex = 0,
+//     eoaAddressIndex = 0,
+//     network = "mainnet",
+//   } = opts;
 
-  const eoa = deriveEOA(mnemonic, eoaAccountIndex, eoaAddressIndex);
-  const railgun = await deriveRailgunID(mnemonic, network);
+//   const eoa = deriveEOA(seed, eoaAccountIndex, eoaAddressIndex);
+//   const railgun = await deriveRailgunID(seed, network);
 
-  return { eoa, railgun };
-}
+//   return { eoa, railgun };
+// }
