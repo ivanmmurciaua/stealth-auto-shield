@@ -7,6 +7,7 @@ Privacy CLI over Ethereum. Supports **Mainnet** and **Sepolia**.
 ## Setup
 
 ```bash
+cp .env.example .env
 npm install
 npm start
 ```

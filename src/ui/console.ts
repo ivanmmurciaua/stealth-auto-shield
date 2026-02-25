@@ -74,7 +74,7 @@ export async function askSeedLength(): Promise<12 | 24> {
     });
     const ask = () => {
       rl.question(
-        chalk.yellow("  How many words does your seed have? (12/24):"),
+        chalk.yellow("  How many words does your seed have? (12/24): "),
         (answer) => {
           const n = parseInt(answer.trim(), 10);
           if (n === 12 || n === 24) {
