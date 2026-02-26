@@ -284,7 +284,7 @@ async function addNetworks(providers: NetworkProviders): Promise<void> {
 }
 
 // ─── Balance state ----
-const BALANCES_POLL_INTERVAL = 7000;
+const BALANCES_POLL_INTERVAL = 11000;
 let balanceSpendable = 0n;
 let balancePending = 0n;
 
