@@ -1,21 +1,16 @@
 import { validateMnemonic } from "bip39";
 import { HDNodeWallet } from "ethers";
-import { NetworkName } from "@railgun-community/shared-models";
 
 import { NETWORK_CONFIG } from "@railgun-community/shared-models";
-import { network } from "../utils/config";
-
-export interface DerivedEOA {
-  address: `0x${string}`;
-  privateKey: `0x${string}`;
-  derivationPath: string;
-  nonce: number;
-}
-
-export interface DerivedRailgunID {
-  zkAddress: `0zk${string}`;
-  railgunID: string;
-}
+import { provider, railgunNetwork } from "../utils/config";
+import {
+  AccountIndex,
+  DerivedEOA,
+  DerivedRailgun,
+  EthereumAddress,
+  RailgunAddress,
+} from "../utils/types";
+import { printSuccess } from "../ui/console";
 
 /**
  * Standard BIP44 path for Ethereum EOA.
@@ -28,6 +23,45 @@ export function eoaDerivationPath(
   addressIndex = 0,
 ): string {
   return `m/44'/60'/${accountIndex}'/0/${addressIndex}`;
+}
+
+export async function getEphemeralEOA(
+  seed: string,
+  opType: number,
+): Promise<DerivedEOA> {
+  let selectedEOA;
+  let addressIndex = 0;
+
+  while (true) {
+    selectedEOA = deriveEOA(seed, opType, addressIndex);
+
+    if (selectedEOA) {
+      if (opType === AccountIndex.deposit) {
+        const nonce = await provider.getTransactionCount(selectedEOA.address);
+        if (nonce === 0) {
+          printSuccess(
+            `EOA found: ${selectedEOA.address} (index ${addressIndex})`,
+          );
+          break;
+        }
+      } else {
+        const balance = await provider.getBalance(selectedEOA.address);
+        if (balance === 0n) {
+          printSuccess(
+            `EOA found: ${selectedEOA.address} (index ${addressIndex})`,
+          );
+          break;
+        }
+      }
+
+      addressIndex++;
+      // DEBUG
+      // printInfo(
+      //   `EOA ${depositEOA.address} already used (nonce ${nonce}), trying next...`,
+      // );
+    }
+  }
+  return selectedEOA;
 }
 
 export function validateSeed(seed: string): boolean {
@@ -50,8 +84,8 @@ export function deriveEOA(
   const wallet = HDNodeWallet.fromPhrase(seed.trim(), undefined, path);
 
   return {
-    address: wallet.address as `0x${string}`,
-    privateKey: wallet.privateKey as `0x${string}`,
+    address: wallet.address as EthereumAddress,
+    privateKey: wallet.privateKey as EthereumAddress,
     derivationPath: path,
     nonce: accountIndex,
   };
@@ -69,14 +103,11 @@ async function getEncryptionKey(secret: string): Promise<string> {
  *
  * @param seed   - seed phrase
  */
-export async function deriveRailgunID(seed: string): Promise<DerivedRailgunID> {
+export async function deriveRailgun(seed: string): Promise<DerivedRailgun> {
   const { createRailgunWallet } = await import("@railgun-community/wallet");
 
-  const networkName =
-    network === "mainnet" ? NetworkName.Ethereum : NetworkName.EthereumSepolia;
-
   const creationBlockMap = {
-    [networkName]: NETWORK_CONFIG[networkName].deploymentBlock,
+    [railgunNetwork]: NETWORK_CONFIG[railgunNetwork].deploymentBlock,
   };
 
   const encryptionKey = await getEncryptionKey("testing");
@@ -88,8 +119,9 @@ export async function deriveRailgunID(seed: string): Promise<DerivedRailgunID> {
   );
 
   return {
-    zkAddress: railgunWallet.railgunAddress as `0zk${string}`,
-    railgunID: railgunWallet.id,
+    address: railgunWallet.railgunAddress as RailgunAddress,
+    encryptionKey: encryptionKey,
+    id: railgunWallet.id,
   };
 }
 
