@@ -1,3 +1,4 @@
+// UI
 import {
   printBanner,
   printSection,
@@ -11,27 +12,65 @@ import {
   askSeedLength,
   printOnlineBanner,
 } from "./ui/console.js";
+import chalk from "chalk";
+
+// RAILGUN
 import {
   initRailgunEngine,
+  railgunTransfer,
+  railgunUnshield,
   scanRailgunBalances,
   setupBalanceCallback,
   shieldETH,
 } from "./init/railgun.js";
-import { validateSeed, deriveRailgunID, deriveEOA } from "./wallet/derive.js";
-import chalk from "chalk";
+import { initializeBroadcasters } from "./init/broadcaster.js";
+
+// WALLET
+import {
+  validateSeed,
+  deriveRailgun,
+  getEphemeralEOA,
+} from "./wallet/derive.js";
+
+// CONFIG
 import { waitUntil } from "./init/network.js";
-import { formatEther } from "viem";
 import { pollUntilDeposit } from "./utils/monitor.js";
 import {
+  avoidRailgunErrors,
   avoidRailgunScanningErrors,
   clear,
   hideAddress,
   provider,
+  railgunNetwork,
   setNetwork,
   setProvider,
 } from "./utils/config.js";
-import { SupportedNetwork } from "./utils/types.js";
+
+// TYPES
+import {
+  AccountIndex,
+  DerivedEOA,
+  DerivedRailgun,
+  RailgunAddress,
+  SupportedNetwork,
+} from "./utils/types.js";
+
 // import { initFluidkeyKeys } from "./stealth.js";
+
+import { formatEther, parseEther } from "viem";
+
+// Wallets
+let eoa: DerivedEOA;
+let railgun: DerivedRailgun;
+
+async function stealthOption(): Promise<boolean> {
+  console.log("");
+  console.log(chalk.yellow("  Do you want to use stealth addresses?"));
+  console.log("    [1] Yes");
+  console.log("    [2] Nop");
+  let stealthChoice = await prompt("Choose (default: Nop)");
+  return stealthChoice === "1" ? true : false;
+}
 
 async function networkSelection(): Promise<SupportedNetwork> {
   console.log(chalk.yellow("  Network:"));
@@ -48,27 +87,40 @@ async function networkSelection(): Promise<SupportedNetwork> {
   return network;
 }
 
-async function menu(seed: string, zkAddress: `0zk${string}`) {
+async function showRailgunBalances(): Promise<void> {
+  const spin = spinner("Checking RAILGUN balances...");
+  const [spendable, pending] = await scanRailgunBalances(railgun.id);
+  spin.stop();
+
+  console.log(chalk.cyan("\n  ── RAILGUN Balances ──"));
+  console.log(
+    `  ${chalk.gray("Spendable:")}  ${chalk.green(formatEther(spendable))} ETH`,
+  );
+  console.log(
+    `  ${chalk.gray("Pending:")}    ${chalk.yellow(formatEther(pending))} ETH`,
+  );
+}
+
+async function menu(seed: string, railgun: DerivedRailgun) {
   while (true) {
     console.log(chalk.cyan("\n  ── Menu ──"));
     console.log("    [0] Exit");
     console.log("    [1] Ephemeral deposit");
     console.log("    [2] Transfer");
     console.log("    [3] Unshield");
+    // console.log("    [4] Swap");
 
     const choice = await prompt("Choose an option");
 
     switch (choice) {
       case "1":
-        await handleEphemeralDeposit(seed, zkAddress);
+        await handleEphemeralDeposit(seed, railgun.address);
         break;
       case "2":
-        // params: network? ; SrcZkaddress ; DstZkaddress
-        await handleTransfer();
+        await handleTransfer(railgun, eoa);
         break;
       case "3":
-        // params: network? ; SrcZkaddress? ; Dst0xaddress
-        await handleUnshield();
+        await handleUnshield(railgun, seed);
         break;
       case "0":
         console.log(chalk.yellow("\n  Goodbye\n"));
@@ -79,45 +131,21 @@ async function menu(seed: string, zkAddress: `0zk${string}`) {
   }
 }
 
-async function stealthOption(): Promise<boolean> {
-  console.log("");
-  console.log(chalk.yellow("  Do you want to use stealth addresses?"));
-  console.log("    [1] Yes");
-  console.log("    [2] Nop");
-  let stealthChoice = await prompt("Choose (default: Nop)");
-  return stealthChoice === "1" ? true : false;
-}
-
 async function handleEphemeralDeposit(
   seed: string,
   railgunAddress: `0zk${string}`,
 ): Promise<void> {
-  printSection("Ephemeral Deposit");
+  printSection("Ephemeral Deposit (0x → 0zk)");
 
-  let eoa;
   const stealthChoice = await stealthOption();
 
-  let addressIndex = 0;
   if (stealthChoice) {
     // let stealthIndex = 0;
+    // eoa = generateStealth();
     console.log("Stealth crazy sh*t will appear here soon...");
     process.exit(0);
   } else {
-    while (true) {
-      eoa = deriveEOA(seed, 0, addressIndex);
-
-      if (eoa) {
-        const nonce = await provider.getTransactionCount(eoa.address);
-
-        if (nonce === 0) {
-          printSuccess(`EOA found: ${eoa.address} (index ${addressIndex})`);
-          break;
-        }
-        addressIndex++;
-        // DEBUG
-        // printInfo(`EOA ${eoa.address} already used (nonce ${nonce}), trying next...`,);
-      }
-    }
+    eoa = await getEphemeralEOA(seed, AccountIndex.deposit);
   }
 
   let balance = await provider.getBalance(eoa.address);
@@ -130,19 +158,62 @@ async function handleEphemeralDeposit(
   await shieldETH(eoa, railgunAddress, balance);
 }
 
-async function handleTransfer(): Promise<void> {
-  printSection("Transfer");
-  printInfo("Coming soon...");
+async function handleTransfer(
+  railgun: DerivedRailgun,
+  eoa: DerivedEOA, //TODO: If dont want to use broadcaster
+): Promise<void> {
+  printSection("Private Transfer (0zk → 0zk)");
+
+  // Init broadcasters (Waku)
+  const wakuSpin = spinner("Connecting to broadcaster network (Waku)...");
+  try {
+    await initializeBroadcasters(railgunNetwork);
+    wakuSpin.succeed(chalk.green("Broadcaster network ready"));
+
+    const toAddress = (await prompt("Recipient 0zk address")) as RailgunAddress;
+    const amountEth = await prompt("Amount ETH to transfer");
+    const amountWei = parseEther(amountEth);
+    // const memo = await prompt("Memo (optional, press Enter to skip)");
+
+    await railgunTransfer(railgun, toAddress, amountWei);
+  } catch (err) {
+    wakuSpin.fail("Could not connect to broadcaster network");
+    printError(String(err));
+    process.exit(1);
+  }
 }
 
-async function handleUnshield(): Promise<void> {
-  printSection("Unshield");
-  printInfo("Coming soon...");
+async function handleUnshield(
+  railgun: DerivedRailgun,
+  seed: string,
+): Promise<void> {
+  printSection("Unshield (0zk → 0x)");
+  const wakuSpin = spinner("Connecting to broadcaster network (Waku)...");
+  try {
+    await initializeBroadcasters(railgunNetwork);
+    wakuSpin.succeed(chalk.green("Broadcaster network ready"));
+
+    const depositEOA = await getEphemeralEOA(seed, AccountIndex.receive);
+    printInfo(`Destination address: ${depositEOA.address}`);
+    printInfo(
+      `You can extract funds importing this private key into your wallet: ${chalk.red(depositEOA.privateKey)}`,
+    );
+    console.log("");
+    const amountEth = await prompt("Amount ETH to unshield");
+    const amount = parseEther(amountEth);
+    //TODO: depositEOA.privateKey -> if dont want to use broadcaster
+    await railgunUnshield(railgun, depositEOA.address, amount);
+  } catch (err) {
+    wakuSpin.fail("Could not connect to broadcaster network");
+    printError(String(err));
+    process.exit(1);
+  }
 }
 
 async function main() {
   clear();
   avoidRailgunScanningErrors();
+  avoidRailgunErrors();
   printBanner();
   await networkSelection();
 
@@ -196,15 +267,14 @@ async function main() {
 
   try {
     const deriveSpin = spinner("Deriving....");
-    const compiled = await deriveRailgunID(seed);
+    railgun = await deriveRailgun(seed);
     deriveSpin.succeed("Keys derived successfully");
-
     console.log(chalk.cyan("\n  ── RAILGUN (0zk) ──"));
     console.log(
-      `  ${chalk.gray("0zk address:")}        ${chalk.white(hideAddress(compiled.zkAddress))}`,
+      `  ${chalk.gray("0zk address:")}        ${chalk.white(hideAddress(railgun.address))}`,
     );
     console.log(
-      `  ${chalk.gray("RAILGUN Wallet ID:")}  ${chalk.red(hideAddress(compiled.railgunID))}`,
+      `  ${chalk.gray("RAILGUN Wallet ID:")}  ${chalk.red(hideAddress(railgun.id))}`,
     );
 
     console.log(
@@ -215,24 +285,15 @@ async function main() {
 
     printOnlineBanner();
     await waitUntil({ type: "online" });
-    console.clear();
+
+    clear();
 
     // Setup balance callback
     setupBalanceCallback();
+    await showRailgunBalances();
 
-    // Scan
-    const spin = spinner("Checking RAILGUN balances...");
-    const [spendable, pending] = await scanRailgunBalances(compiled.railgunID);
-    spin.stop();
-
-    console.log(chalk.cyan("\n  ── RAILGUN Balances ──"));
-    console.log(
-      `  ${chalk.gray("Spendable:")}  ${chalk.green(formatEther(spendable))} ETH`,
-    );
-    console.log(
-      `  ${chalk.gray("Pending:")}    ${chalk.yellow(formatEther(pending))} ETH`,
-    );
-    await menu(seed, compiled.zkAddress);
+    // === MAIN MENU ===
+    await menu(seed, railgun);
   } catch (err) {
     printError(`Error: ${String(err)}`);
     process.exit(1);

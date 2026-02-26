@@ -20,11 +20,12 @@
   "dependencies": {
     "@fluidkey/stealth-account-kit": "^1.1.1",
     "@railgun-community/shared-models": "8.0.1",
+    "@railgun-community/waku-broadcaster-client-node": "^9.0.5",
     "@railgun-community/wallet": "^10.8.1",
     "@safe-global/protocol-kit": "^6.1.2",
     "ethers": "^6.13.0",
     "level": "^8.0.0",
-    "snarkjs": "^0.7.0",
+    "snarkjs": "^0.7.6",
     "viem": "^2.21.0",
     "bip39": "^3.1.0",
     "chalk": "^5.3.0",

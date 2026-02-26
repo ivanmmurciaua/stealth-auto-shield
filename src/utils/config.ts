@@ -1,8 +1,10 @@
 import { JsonRpcProvider } from "ethers";
 import { SupportedNetwork } from "./types";
+import { NetworkName } from "@railgun-community/shared-models";
 
 export let provider: JsonRpcProvider;
 export let network: SupportedNetwork;
+export let railgunNetwork: NetworkName;
 
 export function hideAddress(address: string) {
   return address.slice(0, 4) + "..." + address.slice(-4);
@@ -22,8 +24,17 @@ export function avoidRailgunScanningErrors(): void {
   };
 }
 
+export function avoidRailgunErrors(): void {
+  process.on("unhandledRejection", (err: any) => {
+    if (err?.message?.includes("Failed to refresh POIs")) return;
+    console.error("Unhandled rejection:", err);
+  });
+}
+
 export const setNetwork = (_network: SupportedNetwork) => {
   network = _network;
+  railgunNetwork =
+    network === "mainnet" ? NetworkName.Ethereum : NetworkName.EthereumSepolia;
 };
 
 export const setProvider = (network: string): JsonRpcProvider => {
