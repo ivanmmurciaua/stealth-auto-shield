@@ -1,4 +1,4 @@
-export type SupportedNetwork = "mainnet" | "sepolia";
+export type SupportedNetwork = "mainnet" | "sepolia" | "arbitrum";
 export type EthereumAddress = `0x${string}`;
 export type RailgunAddress = `0zk${string}`;
 

@@ -17,11 +17,12 @@ import chalk from "chalk";
 // RAILGUN
 import {
   initRailgunEngine,
-  railgunTransfer,
-  railgunUnshield,
+  privateSwap,
+  privateTransferETH,
   scanRailgunBalances,
   setupBalanceCallback,
   shieldETH,
+  unshieldETH,
 } from "./init/railgun.js";
 import { initializeBroadcasters } from "./init/broadcaster.js";
 
@@ -40,10 +41,13 @@ import {
   avoidRailgunScanningErrors,
   clear,
   hideAddress,
+  network,
   provider,
   railgunNetwork,
   setNetwork,
   setProvider,
+  TOKEN_DECIMALS,
+  TOKEN_SYMBOLS,
 } from "./utils/config.js";
 
 // TYPES
@@ -51,13 +55,16 @@ import {
   AccountIndex,
   DerivedEOA,
   DerivedRailgun,
+  EthereumAddress,
   RailgunAddress,
   SupportedNetwork,
 } from "./utils/types.js";
 
 // import { initFluidkeyKeys } from "./stealth.js";
 
-import { formatEther, parseEther } from "viem";
+import { formatEther, formatUnits, parseEther } from "viem";
+//TODO: Extract this
+import { NETWORK_CONFIG } from "@railgun-community/shared-models";
 
 // Wallets
 let eoa: DerivedEOA;
@@ -73,11 +80,27 @@ async function stealthOption(): Promise<boolean> {
 }
 
 async function networkSelection(): Promise<SupportedNetwork> {
+  let network: SupportedNetwork = "sepolia";
+
   console.log(chalk.yellow("  Network:"));
   console.log("    [1] mainnet");
   console.log("    [2] sepolia");
+  console.log("    [3] arbitrum");
   const netChoice = await prompt("Choose (default: sepolia)");
-  const network: SupportedNetwork = netChoice === "1" ? "mainnet" : "sepolia";
+
+  switch (netChoice) {
+    case "1":
+      network = "mainnet";
+      break;
+    case "2":
+      network = "sepolia";
+      break;
+    case "3":
+      network = "arbitrum";
+      break;
+    default:
+      network = "sepolia";
+  }
 
   // Set global config
   setNetwork(network);
@@ -89,38 +112,66 @@ async function networkSelection(): Promise<SupportedNetwork> {
 
 async function showRailgunBalances(): Promise<void> {
   const spin = spinner("Checking RAILGUN balances...");
-  const [spendable, pending] = await scanRailgunBalances(railgun.id);
+  const balances = await scanRailgunBalances(railgun.id);
   spin.stop();
 
+  const { baseToken } = NETWORK_CONFIG[railgunNetwork];
+
   console.log(chalk.cyan("\n  ── RAILGUN Balances ──"));
-  console.log(
-    `  ${chalk.gray("Spendable:")}  ${chalk.green(formatEther(spendable))} ETH`,
-  );
-  console.log(
-    `  ${chalk.gray("Pending:")}    ${chalk.yellow(formatEther(pending))} ETH`,
-  );
+
+  const entries = Object.entries(balances);
+  if (entries.length === 0) {
+    console.log(
+      chalk.gray(
+        "\n  * If balances seem incorrect, rescan using option [1] from the main menu.",
+      ),
+    );
+    console.log(`  ${chalk.gray("No balances found")}`);
+    return;
+  }
+
+  for (const [token, { spendable, pending }] of entries) {
+    // const isWrapped = token === baseToken.wrappedAddress.toLowerCase();
+    const symbol = TOKEN_SYMBOLS[token] ?? token.slice(0, 6) + "...";
+    const decimals = TOKEN_DECIMALS[token] ?? 18;
+
+    console.log(`  ${chalk.cyan(symbol)}`);
+    console.log(
+      `    ${chalk.gray("Spendable:")}  ${chalk.green(formatUnits(spendable, decimals))}`,
+    );
+    console.log(
+      `    ${chalk.gray("Pending:")}    ${chalk.yellow(formatUnits(pending, decimals))}`,
+    );
+  }
 }
 
 async function menu(seed: string, railgun: DerivedRailgun) {
   while (true) {
     console.log(chalk.cyan("\n  ── Menu ──"));
     console.log("    [0] Exit");
-    console.log("    [1] Ephemeral deposit");
-    console.log("    [2] Transfer");
-    console.log("    [3] Unshield");
-    // console.log("    [4] Swap");
+    console.log("    [1} Reescan balances");
+    console.log("    [2] Ephemeral deposit");
+    console.log("    [3] Transfer");
+    console.log("    [4] Unshield");
+    console.log("    [5] Swap");
 
     const choice = await prompt("Choose an option");
 
     switch (choice) {
       case "1":
-        await handleEphemeralDeposit(seed, railgun.address);
+        await showRailgunBalances();
         break;
       case "2":
-        await handleTransfer(railgun, eoa);
+        await handleEphemeralDeposit(seed, railgun.address);
         break;
       case "3":
+        await handleTransfer(railgun, eoa);
+        break;
+      case "4":
         await handleUnshield(railgun, seed);
+        break;
+      case "5":
+        await handleSwap(railgun);
         break;
       case "0":
         console.log(chalk.yellow("\n  Goodbye\n"));
@@ -175,7 +226,7 @@ async function handleTransfer(
     const amountWei = parseEther(amountEth);
     // const memo = await prompt("Memo (optional, press Enter to skip)");
 
-    await railgunTransfer(railgun, toAddress, amountWei);
+    await privateTransferETH(railgun, toAddress, amountWei);
   } catch (err) {
     wakuSpin.fail("Could not connect to broadcaster network");
     printError(String(err));
@@ -202,7 +253,7 @@ async function handleUnshield(
     const amountEth = await prompt("Amount ETH to unshield");
     const amount = parseEther(amountEth);
     //TODO: depositEOA.privateKey -> if dont want to use broadcaster
-    await railgunUnshield(railgun, depositEOA.address, amount);
+    await unshieldETH(railgun, depositEOA.address, amount);
   } catch (err) {
     wakuSpin.fail("Could not connect to broadcaster network");
     printError(String(err));
@@ -210,6 +261,37 @@ async function handleUnshield(
   }
 }
 
+async function handleSwap(railgun: DerivedRailgun) {
+  if (network === "sepolia") {
+    printError("Swap not available on Sepolia. Use other network.");
+    return;
+  }
+
+  printSection("Private Swap (0zk → 0zk)");
+  const wakuSpin = spinner("Connecting to broadcaster network (Waku)...");
+  //TODO: Extract waku initializer and import it in all fxs
+  try {
+    await initializeBroadcasters(railgunNetwork);
+    wakuSpin.succeed(chalk.green("Broadcaster network ready"));
+    console.log("");
+    //TODO: Improve this and:
+    //  1. Add selector in buyToken
+    //  2. Add sellToken with selector and balances
+    printError(
+      "Sell token must be RAILGUN ETH. Other tokens as sell input are not yet supported.",
+    );
+    const buyToken = (await prompt(
+      "Buy token address (For USDC in Arbitrum use: 0xaf88d065e77c8cc2239327c5edb3a432268e5831)",
+    )) as EthereumAddress;
+    const amountEth = await prompt("Amount ETH to sell");
+    const amount = parseEther(amountEth);
+    await privateSwap(railgun, buyToken, amount);
+  } catch (err) {
+    wakuSpin.fail("Could not connect to broadcaster network");
+    printError(String(err));
+    process.exit(1);
+  }
+}
 async function main() {
   clear();
   avoidRailgunScanningErrors();

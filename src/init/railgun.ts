@@ -16,6 +16,9 @@ import {
   populateProvedUnshieldBaseToken,
   generateUnshieldBaseTokenProof,
   gasEstimateForUnprovenUnshieldBaseToken,
+  gasEstimateForUnprovenCrossContractCalls,
+  generateCrossContractCallsProof,
+  populateProvedCrossContractCalls,
 } from "@railgun-community/wallet";
 
 import {
@@ -61,6 +64,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import { Wallet } from "ethers";
+import {
+  RecipeERC20Info,
+  //TODO: Implement RecipeInput type,
+  setRailgunFees,
+  ZeroXConfig,
+  ZeroXV2SwapRecipe,
+} from "@railgun-community/cookbook";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -170,6 +180,7 @@ function createArtifactStore(dir: string): ArtifactStore {
 export interface NetworkProviders {
   mainnet: FallbackProviderJsonConfig;
   sepolia: FallbackProviderJsonConfig;
+  arbitrum: FallbackProviderJsonConfig;
 }
 
 /**
@@ -201,7 +212,23 @@ export function buildProviders(): NetworkProviders {
     ],
   };
 
-  return { mainnet, sepolia };
+  const arbitrum: FallbackProviderJsonConfig = {
+    chainId: 42161,
+    providers: [
+      {
+        provider: process.env.ARBITRUM_RPC_URL_1!,
+        priority: 1,
+        weight: 2,
+      },
+      {
+        provider: process.env.ARBITRUM_RPC_URL_2!,
+        priority: 2,
+        weight: 2,
+      },
+    ],
+  };
+
+  return { mainnet, sepolia, arbitrum };
 }
 
 /**
@@ -254,9 +281,11 @@ export async function initRailgunEngine(): Promise<void> {
   await addNetworks(providers);
 
   WETHAddress =
-    network === "sepolia"
-      ? "0xfff9976782d46cc05630d1f6ebab18b2324d6b14"
-      : "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+    network === "arbitrum"
+      ? "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
+      : network === "mainnet"
+        ? "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        : "0xfff9976782d46cc05630d1f6ebab18b2324d6b14";
 }
 
 async function addNetworks(providers: NetworkProviders): Promise<void> {
@@ -281,37 +310,77 @@ async function addNetworks(providers: NetworkProviders): Promise<void> {
     NetworkName.EthereumSepolia,
   );
   // console.log(`Network connected: Sepolia (chainId 11155111)`);
+
+  // Arbitrum
+  await loadProvider(
+    {
+      chainId: providers.arbitrum.chainId,
+      providers: providers.arbitrum.providers,
+    },
+    NetworkName.Arbitrum,
+  );
+  // console.log(`Network connected: Arbitrum (chainId 42161)`);
 }
 
-// ─── Balance state ----
-const BALANCES_POLL_INTERVAL = 11000;
-let balanceSpendable = 0n;
-let balancePending = 0n;
+// ─── Balance state ────────────────────────────────
+const BALANCES_POLL_INTERVAL = 30000;
+
+interface TokenBalance {
+  spendable: bigint;
+  pending: bigint;
+}
+
+let balances: Record<string, TokenBalance> = {};
 
 export function setupBalanceCallback(): void {
   setOnBalanceUpdateCallback((balancesEvent: RailgunBalancesEvent) => {
-    const total = balancesEvent.erc20Amounts.reduce(
-      (acc, e) => acc + e.amount,
-      0n,
-    );
-    if (total === 0n) return;
-    if (balancesEvent.balanceBucket === "Spendable") {
-      balanceSpendable = total;
-    } else if (balancesEvent.balanceBucket === "ShieldPending") {
-      balancePending = total;
+    if (balancesEvent.chain.id !== NETWORK_CONFIG[railgunNetwork].chain.id)
+      return;
+
+    // DEBUG
+    // console.log("[BALANCE EVENT] chain:", balancesEvent.chain);
+    // console.log("[BALANCE EVENT] bucket:", balancesEvent.balanceBucket);
+    // console.log(
+    //   "[BALANCE EVENT] erc20Amounts:",
+    //   JSON.stringify(
+    //     balancesEvent.erc20Amounts.map((e) => ({
+    //       token: e.tokenAddress,
+    //       amount: e.amount.toString(),
+    //     })),
+    //     null,
+    //     2,
+    //   ),
+    // );
+
+    for (const e of balancesEvent.erc20Amounts) {
+      const token = e.tokenAddress.toLowerCase();
+      if (!balances[token]) balances[token] = { spendable: 0n, pending: 0n };
+
+      if (balancesEvent.balanceBucket === "Spendable") {
+        balances[token].spendable = e.amount;
+      } else if (
+        balancesEvent.balanceBucket === "ShieldPending" ||
+        balancesEvent.balanceBucket === "MissingExternalPOI" ||
+        balancesEvent.balanceBucket === "MissingInternalPOI"
+      ) {
+        balances[token].pending += e.amount;
+      }
     }
   });
 }
 
 export async function scanRailgunBalances(
   railgunWalletId: string,
-): Promise<[bigint, bigint]> {
+): Promise<Record<string, TokenBalance>> {
+  balances = {}; // reset before each scan
   const chain = NETWORK_CONFIG[railgunNetwork].chain;
 
-  await refreshBalances(chain, [railgunWalletId]);
-  await new Promise((r) => setTimeout(r, BALANCES_POLL_INTERVAL));
+  await Promise.race([
+    refreshBalances(chain, [railgunWalletId]),
+    new Promise((r) => setTimeout(r, BALANCES_POLL_INTERVAL)),
+  ]);
 
-  return [balanceSpendable, balancePending];
+  return balances;
 }
 
 /**
@@ -397,7 +466,7 @@ export async function shieldETH(
  * Private transfer
  * Transfers wETH from 0zk to another 0zk privately
  */
-export async function railgunTransfer(
+export async function privateTransferETH(
   zerozk: DerivedRailgun,
   toZk: RailgunAddress,
   amount: bigint,
@@ -494,7 +563,7 @@ export async function railgunTransfer(
   }
 }
 
-export async function railgunUnshield(
+export async function unshieldETH(
   zerozk: DerivedRailgun,
   destinationAddress: EthereumAddress,
   amount: bigint,
@@ -582,4 +651,198 @@ export async function railgunUnshield(
       }
     }
   }
+}
+
+export async function privateSwap(
+  zerozk: DerivedRailgun,
+  buyTokenAddress: EthereumAddress,
+  amount: bigint,
+  slippage: number = 50, // In basis points: 0.05%
+): Promise<void> {
+  const sellTokenAddress = WETHAddress; //TODO: Move to param when more tokens are available
+
+  if (!process.env.ZEROX_API_KEY) {
+    throw new Error(
+      "In order to use private swap, you need to configure in your .env, ZEROX_API_KEY",
+    );
+  }
+  ZeroXConfig.API_KEY = process.env.ZEROX_API_KEY;
+
+  setRailgunFees(
+    railgunNetwork,
+    25n, // shield fee 0.25%
+    25n, // unshield fee 0.25%
+  );
+
+  const sellERC20Info: RecipeERC20Info = {
+    tokenAddress: sellTokenAddress,
+    decimals: BigInt(18), //TODO: It depends from buyTokenAddress
+    isBaseToken: false,
+  };
+  const buyERC20Info: RecipeERC20Info = {
+    tokenAddress: buyTokenAddress,
+    decimals: BigInt(6), //TODO: It depends from buyTokenAddress
+    isBaseToken: false,
+  };
+
+  const swap = new ZeroXV2SwapRecipe(
+    sellERC20Info,
+    buyERC20Info,
+    slippage,
+    zerozk.address,
+  );
+
+  const unshieldERC20Amounts = [{ ...sellERC20Info, amount }];
+
+  const recipeInput: any = {
+    networkName: railgunNetwork,
+    erc20Amounts: unshieldERC20Amounts,
+    unshieldERC20Amounts,
+    railgunAddress: zerozk.address,
+    nfts: [],
+  };
+
+  const recipeSpin = spinner("Getting swap route from 0x...");
+  // DEBUG
+  // console.log(
+  //   "[RECIPE INPUT]",
+  //   JSON.stringify(
+  //     {
+  //       networkName: recipeInput.networkName,
+  //       erc20Amounts: recipeInput.erc20Amounts,
+  //       nfts: recipeInput.nfts,
+  //       railgunAddress: recipeInput.railgunAddress,
+  //     },
+  //     (_k, v) => (typeof v === "bigint" ? v.toString() : v),
+  //     2,
+  //   ),
+  // );
+
+  const {
+    crossContractCalls,
+    erc20AmountRecipients,
+    // nftRecipients,
+    // feeERC20AmountRecipients,
+    minGasLimit,
+  } = await swap.getRecipeOutput(recipeInput);
+
+  recipeSpin.succeed("Swap route found");
+
+  const shieldERC20Addresses = erc20AmountRecipients.map(
+    ({ tokenAddress }) => ({
+      tokenAddress,
+      recipientAddress: zerozk.address,
+    }),
+  );
+  // const shieldERC20Addresses = erc20AmountRecipients.map(
+  //   ({ tokenAddress }) => tokenAddress,
+  // );
+
+  const spin = spinner("Looking for available broadcaster...");
+  const selectedBroadcaster = await findBroadcaster(
+    railgunNetwork,
+    WETHAddress,
+  );
+  if (!selectedBroadcaster) {
+    spin.fail("No broadcaster available.");
+    return;
+  }
+  spin.succeed(`Broadcaster found: ${selectedBroadcaster.railgunAddress}`);
+
+  //TODO: Extract common code
+  const feeData = await provider.getFeeData();
+  const evmGasType = getEVMGasTypeForTransaction(railgunNetwork, false);
+  const originalGasDetails: TransactionGasDetails =
+    evmGasType === EVMGasType.Type2
+      ? {
+          evmGasType: EVMGasType.Type2,
+          gasEstimate: 0n,
+          maxFeePerGas: feeData.maxFeePerGas ?? 0n,
+          maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ?? 0n,
+        }
+      : {
+          evmGasType: EVMGasType.Type1,
+          gasEstimate: 0n,
+          gasPrice: feeData.gasPrice ?? 0n,
+        };
+
+  const feeTokenDetails: FeeTokenDetails = {
+    tokenAddress: WETHAddress,
+    feePerUnitGas: BigInt(selectedBroadcaster.tokenFee.feePerUnitGas),
+  };
+
+  const gasSpin = spinner("Estimating gas...");
+  const { gasEstimate } = await gasEstimateForUnprovenCrossContractCalls(
+    TXIDVersion.V2_PoseidonMerkle,
+    railgunNetwork,
+    zerozk.id,
+    zerozk.encryptionKey,
+    unshieldERC20Amounts,
+    [],
+    shieldERC20Addresses,
+    [],
+    crossContractCalls,
+    originalGasDetails,
+    feeTokenDetails,
+    false,
+    minGasLimit,
+  );
+  gasSpin.succeed(`Gas estimated: ${gasEstimate}`);
+
+  const broadcasterFeeERC20AmountRecipient = calcBroadcasterFee(
+    selectedBroadcaster,
+    feeTokenDetails,
+    { ...originalGasDetails, gasEstimate },
+  );
+  const overallBatchMinGasPrice = calculateGasPrice({
+    ...originalGasDetails,
+    gasEstimate,
+  });
+
+  const proofSpin = spinner("Generating ZK proof (~5s)...");
+  await generateCrossContractCallsProof(
+    TXIDVersion.V2_PoseidonMerkle,
+    railgunNetwork,
+    zerozk.id,
+    zerozk.encryptionKey,
+    unshieldERC20Amounts,
+    [],
+    shieldERC20Addresses,
+    [],
+    crossContractCalls,
+    broadcasterFeeERC20AmountRecipient,
+    false,
+    overallBatchMinGasPrice,
+    minGasLimit,
+    (progress: any) => {
+      proofSpin.text = `Generating ZK proof... ${Math.round(progress * 100)}%`;
+    },
+  );
+  proofSpin.succeed("ZK proof generated");
+
+  const sendSpin = spinner("Broadcasting swap...");
+  const populated = await populateProvedCrossContractCalls(
+    TXIDVersion.V2_PoseidonMerkle,
+    railgunNetwork,
+    zerozk.id,
+    unshieldERC20Amounts,
+    [],
+    shieldERC20Addresses,
+    [],
+    crossContractCalls,
+    broadcasterFeeERC20AmountRecipient,
+    false,
+    overallBatchMinGasPrice,
+    { ...originalGasDetails, gasEstimate },
+  );
+
+  await submitViaBroadcaster(
+    populated,
+    selectedBroadcaster,
+    railgunNetwork,
+    overallBatchMinGasPrice,
+    true, // useRelayAdapt
+  );
+  sendSpin.succeed("Swap broadcasted");
+  printSuccess("Private swap complete.");
 }
